@@ -19,6 +19,13 @@ PART B - TransferFee interaction (XLS-0096 section 6.4)
   mutually exclusive, in both directions. This part attempts both transitions
   and reports the actual result codes.
 
+PART C - Confidential send between holders
+  Opts a second holder in, sends an amount from one holder to the other with
+  ConfidentialMPTSend, and confirms the ledger moved the right value: the
+  sender is debited, the recipient is credited, and the auditor recovers the
+  transferred amount itself - not merely the balances - from its own
+  ciphertext.
+
 Requirements
 ------------
     pip install xrpl-py xrpl-py-confidential
@@ -35,6 +42,7 @@ from xrpl.ext.confidential import (
     decrypt_confidential_balance,
     prepare_confidential_convert,
     prepare_confidential_merge_inbox,
+    prepare_confidential_send,
 )
 from xrpl.models import (
     LedgerEntry,
@@ -309,6 +317,126 @@ if code == "tesSUCCESS":
 
 
 # ---------------------------------------------------------------------------
+# PART C — Confidential send between holders
+# ---------------------------------------------------------------------------
+
+print("\n=== PART C: confidential send between holders ===\n")
+
+SEND_AMOUNT = 3_000
+SECOND_HOLDER_FUNDING = 1_000
+
+print("Funding and authorizing a second holder...")
+holder2 = generate_faucet_wallet(client)
+holder2_priv, holder2_pub = crypto.generate_keypair()
+print(f"  holder2 : {holder2.address}")
+
+code, _ = send(
+    MPTokenAuthorize(account=holder2.address, mptoken_issuance_id=mpt_id), holder2
+)
+record("C1 second holder authorized", code == "tesSUCCESS", code)
+
+code, _ = send(
+    Payment(
+        account=issuer.address,
+        destination=holder2.address,
+        amount={"mpt_issuance_id": mpt_id, "value": str(SECOND_HOLDER_FUNDING)},
+    ),
+    issuer,
+)
+record(
+    "C2 second holder funded publicly",
+    code == "tesSUCCESS",
+    f"{code}, amount visible: {SECOND_HOLDER_FUNDING}",
+)
+
+# A holder's first conversion registers its HolderEncryptionKey. That key is
+# what lets a sender encrypt a transfer under the recipient's key, so a holder
+# cannot receive a confidential send before it has converted once.
+print("\nConverting the second holder's balance (registers its encryption key)...")
+code, _ = send(
+    prepare_confidential_convert(
+        client,
+        holder2,
+        mpt_id,
+        SECOND_HOLDER_FUNDING,
+        issuer_pub,
+        holder2_priv,
+        holder2_pub,
+        auditor_pub,
+    ),
+    holder2,
+)
+record("C3 second holder opted in by converting", code == "tesSUCCESS", code)
+
+code, _ = send(prepare_confidential_merge_inbox(client, holder2, mpt_id), holder2)
+record("C4 second holder merged its inbox", code == "tesSUCCESS", code)
+
+print(f"\nSending {SEND_AMOUNT} confidentially from holder to holder2...")
+send_tx = prepare_confidential_send(
+    client,
+    holder,
+    holder2.address,
+    mpt_id,
+    SEND_AMOUNT,
+    holder_priv,
+    holder_pub,
+    holder2_pub,
+    issuer_pub,
+    auditor_pub,
+)
+code, res = send(send_tx, holder)
+record("C5 confidential send accepted", code == "tesSUCCESS", code)
+if res:
+    print(f"  {EXPLORER}/transactions/{res['hash']}")
+    print("  (the transaction carries ciphertexts and a proof, not an amount)")
+
+code, _ = send(prepare_confidential_merge_inbox(client, holder2, mpt_id), holder2)
+record("C6 recipient merged the received amount", code == "tesSUCCESS", code)
+
+print("\nDecrypting both balances after the transfer...")
+issuance = client.request(LedgerEntry(mpt_issuance=mpt_id)).result["node"]
+ceiling = int(issuance["ConfidentialOutstandingAmount"])
+
+
+def spending_balance(address, privkey):
+    entry = client.request(
+        LedgerEntry(mptoken=MPToken(mpt_issuance_id=mpt_id, account=address))
+    ).result["node"]
+    return decrypt_confidential_balance(
+        entry["ConfidentialBalanceSpending"], privkey, range_high=ceiling
+    )
+
+
+sender_after = spending_balance(holder.address, holder_priv)
+recipient_after = spending_balance(holder2.address, holder2_priv)
+print(f"  sender reads    : {sender_after}")
+print(f"  recipient reads : {recipient_after}")
+
+record(
+    "C7 sender debited by the sent amount",
+    sender_after == SUPPLY - SEND_AMOUNT,
+    f"expected {SUPPLY - SEND_AMOUNT}, got {sender_after}",
+)
+record(
+    "C8 recipient credited the sent amount",
+    recipient_after == SECOND_HOLDER_FUNDING + SEND_AMOUNT,
+    f"expected {SECOND_HOLDER_FUNDING + SEND_AMOUNT}, got {recipient_after}",
+)
+
+# The auditor recovers the transferred amount itself, from a ciphertext carried
+# on the transaction, without either holder's key.
+auditor_amount = decrypt_confidential_balance(
+    send_tx.auditor_encrypted_amount, auditor_priv, range_high=ceiling
+)
+print(f"  auditor reads the transferred amount as: {auditor_amount}")
+record(
+    "C9 auditor reads the transferred amount",
+    auditor_amount == SEND_AMOUNT,
+    f"expected {SEND_AMOUNT}, got {auditor_amount}",
+)
+
+
+# ---------------------------------------------------------------------------
 
 print("\n=== SUMMARY ===\n")
 passed = sum(1 for _, ok, _ in results if ok)
@@ -316,5 +444,6 @@ for name, ok, detail in results:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
     print(f"        {detail}")
 print(f"\n  {passed}/{len(results)} checks passed.")
-print(f"\n  Holder account: {EXPLORER}/accounts/{holder.address}")
-print(f"  Issuer account: {EXPLORER}/accounts/{issuer.address}")
+print(f"\n  Issuer account    : {EXPLORER}/accounts/{issuer.address}")
+print(f"  Holder account    : {EXPLORER}/accounts/{holder.address}")
+print(f"  Recipient account : {EXPLORER}/accounts/{holder2.address}")

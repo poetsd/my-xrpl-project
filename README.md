@@ -40,10 +40,30 @@ reports what the ledger returns.
 | B2a | A fee-bearing issuance (2.5%) can be created normally |
 | B2b | That fee-bearing issuance refuses the confidential-balance flag |
 
+**Part C — confidential send between holders**
+
+| # | Check |
+|---|---|
+| C1 | A second holder is authorized to hold the MPT |
+| C2 | The issuer funds it with a public payment (amount visible) |
+| C3 | Its first `ConfidentialMPTConvert` registers its `HolderEncryptionKey` |
+| C4 | It merges that balance into its spending balance |
+| C5 | `ConfidentialMPTSend` moves an amount from one holder to the other |
+| C6 | The recipient merges what it received |
+| C7 | The sender's decrypted balance fell by exactly the sent amount |
+| C8 | The recipient's decrypted balance rose by exactly the sent amount |
+| C9 | The auditor recovers the **transferred amount itself**, from a ciphertext on the transaction, without either holder's key |
+
+C3 is a constraint worth knowing before designing around this: a holder that
+has never converted has no registered encryption key, so nobody can encrypt a
+transfer to it. Receiving a confidential send requires opting in first.
+
+C9 is the compliance story in one line. C7 and C8 show the ledger moved the
+right value while the transaction itself carried no plaintext amount.
+
 ## Result
 
-As of the run recorded below, **11/11 checks passed** on Devnet. Both
-directions of the Part B lock were confirmed with `tecNO_PERMISSION`:
+As of the run recorded below, **20/20 checks passed** on Devnet:
 
 ```
 PASS  A7 auditor reads the same value from a different ciphertext
@@ -52,19 +72,22 @@ PASS  A8 plaintext amount is not present on the entry
       MPTAmount=None
 PASS  B1 confidential issuance refuses a nonzero TransferFee
       spec 6.4 expects tecNO_PERMISSION; observed: tecNO_PERMISSION
-PASS  B2a fee-bearing issuance created
-      tesSUCCESS
 PASS  B2b fee-bearing issuance refuses the confidential flag
       spec 6.4 expects a rejection; observed: tecNO_PERMISSION
+PASS  C7 sender debited by the sent amount
+      expected 9000, got 9000
+PASS  C8 recipient credited the sent amount
+      expected 4000, got 4000
+PASS  C9 auditor reads the transferred amount
+      expected 3000, got 3000
 
-11/11 checks passed.
+20/20 checks passed.
 ```
 
 Because enabling confidential balances is one-way, B1 and B2b together mean an
 issuer chooses between confidentiality and native transfer fees **permanently**,
-in whichever order the choice is made. This observation is the basis of a
-question raised in
-[XRPL-Standards Discussion #372](https://github.com/XRPLF/XRPL-Standards/discussions/372).
+in whichever order the choice is made. That observation is the basis of
+[XRPL-Standards Discussion #644](https://github.com/XRPLF/XRPL-Standards/discussions/644).
 
 ## Running it
 
@@ -73,8 +96,8 @@ pip install xrpl-py xrpl-py-confidential
 python XLS-0096-Verifier.py
 ```
 
-Takes roughly three minutes. It funds three fresh Devnet accounts from the
-faucet, so no configuration and no existing wallet are needed.
+Takes roughly six minutes. It funds four fresh Devnet accounts from the faucet,
+so no configuration and no existing wallet are needed.
 
 ### In Google Colab
 
@@ -105,5 +128,7 @@ Then upload the script and run it with `%run XLS-0096-Verifier.py`.
 ## References
 
 - [XLS-0096 specification](https://xls.xrpl.org/xls/XLS-0096-confidential-mpt.html)
-- [XRPL-Standards Discussion #372](https://github.com/XRPLF/XRPL-Standards/discussions/372)
+- [Discussion #644 — the TransferFee question this repo backs](https://github.com/XRPLF/XRPL-Standards/discussions/644)
+- [Discussion #372 — the original XLS-96 thread (closed)](https://github.com/XRPLF/XRPL-Standards/discussions/372)
 - [Issue an MPT for Confidential Transfers (xrpl.org tutorial)](https://xrpl.org/docs/tutorials/tokens/mpts/issue-mpt-for-confidential-transfers)
+- [Send Confidential MPT Payments (xrpl.org tutorial)](https://xrpl.org/docs/tutorials/payments/send-confidential-payments)
